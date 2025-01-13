@@ -1,108 +1,100 @@
-"""Utilities for processing and analyzing text from legal documents."""
-
-from typing import List, Optional
-from langchain.text_splitter import CharacterTextSplitter
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain.memory import ConversationBufferMemory
-from langchain.chains import ConversationalRetrievalChain
+import streamlit as st
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import PromptTemplate
+from langchain.chains import LLMChain
+import os
 
-from ..config.analysis_config import AnalysisMode, AnalysisConfig, ANALYSIS_CONFIGS
+# Set page config
+st.set_page_config(page_title="Tweet Generator", page_icon="🐦")
 
-def create_text_chunks(
-    text: str,
-    chunk_size: int,
-    chunk_overlap: int
-) -> List[str]:
-    """
-    Split text into manageable chunks for processing.
-    
-    Args:
-        text: Raw text to be split
-        chunk_size: Size of each chunk
-        chunk_overlap: Overlap between chunks
-    
-    Returns:
-        List of text chunks
-    """
-    text_splitter = CharacterTextSplitter(
-        separator="\n",
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        length_function=len
-    )
-    return text_splitter.split_text(text)
+# Set up API key
+os.environ['GOOGLE_API_KEY'] = st.secrets['GOOGLE_API_KEY']
 
-def create_conversation_chain(
-    text_chunks: List[str],
-    config: AnalysisConfig
-) -> ConversationalRetrievalChain:
-    """
-    Create a conversation chain for document analysis.
-    
-    Args:
-        text_chunks: Processed text chunks
-        config: Analysis configuration
-    
-    Returns:
-        Configured conversation chain
-    """
-    # Create embeddings and vector store
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="models/embedding-001"
-    )
-    vectorstore = FAISS.from_texts(texts=text_chunks, embedding=embeddings)
-    
-    # Initialize language model
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-pro",
-        temperature=config.temperature,
-        convert_system_message_to_human=True
-    )
-    
-    # Create prompt template
-    prompt = PromptTemplate(
-        input_variables=['context', 'question'],
-        template=config.prompt_template
-    )
-    
-    # Initialize memory
-    memory = ConversationBufferMemory(
-        memory_key='chat_history',
-        return_messages=True
-    )
-    
-    # Create and return the conversation chain
-    return ConversationalRetrievalChain.from_llm(
-        llm=llm,
-        retriever=vectorstore.as_retriever(),
-        memory=memory,
-        combine_docs_chain_kwargs={'prompt': prompt}
-    )
+# Enhanced prompt template for better structured outputs
+tweet_template = """Generate {number} professional tweets about {topic}. 
+Each tweet should:
+- Be engaging and informative
+- Include relevant hashtags
+- Stay within Twitter's character limit
+- Be uniquely different from other tweets
+- Follow proper formatting
 
-def process_document(
-    text: str,
-    mode: AnalysisMode
-) -> Optional[ConversationalRetrievalChain]:
-    """
-    Process a document using specified analysis mode.
-    
-    Args:
-        text: Document text
-        mode: Analysis mode to use
-    
-    Returns:
-        Configured conversation chain or None if processing fails
-    """
-    try:
-        config = ANALYSIS_CONFIGS[mode]
-        chunks = create_text_chunks(
-            text,
-            config.chunk_size,
-            config.chunk_overlap
-        )
-        return create_conversation_chain(chunks, config)
-    except Exception as e:
-        print(f"Error processing document: {str(e)}")
-        return None
+Format each tweet as a complete, ready-to-post message.
+If generating multiple tweets, separate them with unique numbers.
+
+Example format:
+1. [Tweet content with #hashtags]
+2. [Another tweet content with #different #hashtags]
+
+Remember to keep each tweet concise and impactful."""
+
+tweet_prompt = PromptTemplate(template=tweet_template, input_variables=['number', 'topic'])
+
+# Initialize Google's Gemini model
+gemini_model = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", temperature=0.7)
+
+# Create LLM chain
+tweet_chain = LLMChain(llm=gemini_model, prompt=tweet_prompt)
+
+# Custom CSS
+st.markdown("""
+<style>
+.tweet-box {
+    background-color: #f8f9fa;
+    border-radius: 10px;
+    padding: 15px;
+    margin: 10px 0;
+    border: 1px solid #e1e8ed;
+}
+.stButton>button {
+    width: 100%;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# Streamlit UI
+st.header("🐦 Tweet Generator")
+st.subheader("Generate engaging tweets using AI")
+
+# Input fields
+col1, col2 = st.columns(2)
+with col1:
+    topic = st.text_input("📝 Topic", placeholder="Enter your topic...")
+with col2:
+    number = st.number_input("🔢 Number of tweets", min_value=1, max_value=10, value=1, step=1)
+
+# Generate button
+if st.button("🚀 Generate Tweets", type="primary"):
+    if topic:
+        with st.spinner("Generating tweets..."):
+            try:
+                # Get response from LLM
+                response = tweet_chain.run({"number": number, "topic": topic})
+                
+                # Split tweets if multiple
+                tweets = [tweet.strip() for tweet in response.split('\n') if tweet.strip()]
+                
+                # Display each tweet
+                for i, tweet in enumerate(tweets, 1):
+                    if tweet:
+                        # Remove numbering if present
+                        tweet_text = tweet[2:].strip() if tweet.startswith(str(i)+'.') else tweet
+                        
+                        # Create unique key for each tweet's container
+                        tweet_container = st.container()
+                        with tweet_container:
+                            st.markdown(f'<div class="tweet-box">{tweet_text}</div>', unsafe_allow_html=True)
+                            if st.button('📋 Copy', key=f'copy_{i}'):
+                                st.toast(f'Tweet {i} copied! 📋')
+                                # Add hidden textarea for copying
+                                st.markdown(f'<textarea style="position: absolute; left: -9999px;">{tweet_text}</textarea>', unsafe_allow_html=True)
+                                st.markdown('<script>document.querySelector("textarea").select();document.execCommand("copy");</script>', unsafe_allow_html=True)
+            
+            except Exception as e:
+                st.error(f"An error occurred: {str(e)}")
+    else:
+        st.warning("Please enter a topic first! 🎯")
+
+# Add footer
+st.markdown("---")
+st.markdown("Made with ❤️ using Streamlit and Gemini")
